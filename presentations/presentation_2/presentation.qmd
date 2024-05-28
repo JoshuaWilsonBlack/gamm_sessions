@@ -1,0 +1,602 @@
+---
+title: "GAMMs Session 2"
+subtitle: "Interactions and Random Effects"
+author: "Joshua <span style='font-variant: small-caps;'>Wilson Black</span>"
+institute: "Te Kāhui Roro Reo | New Zealand Institute of Language, Brain and Behaviour <br/> Te Whare Wānanga o Waitaha | University of Canterbury"
+format:
+  revealjs:
+    theme: [custom.scss]
+    incremental: true
+    logo: images/NZILBB-small.svg
+    df-print: paged
+    title-slide-attributes:
+      data-background-image: ../images/NZILBB-big.svg
+      data-background-position: 'top left'
+      data-background-size: 50%
+bibliography: 
+  - grateful-refs.bib
+  - ../../stat_workshops.bib
+editor: 
+  markdown: 
+    wrap: 72
+execute: 
+  echo: true
+---
+
+```{r}
+#| echo: false
+library(tidyverse)
+library(here)
+library(parallel)
+
+theme_set(theme_bw())
+```
+
+## Last Time
+
+1. Conceptual introduction
+2. Fit a GAM with `mgcv`
+3. Simple model evaluation
+4. Some plotting
+
+## This Time
+
+1. Another GAM
+2. Adding interactions
+2. Mixed effects
+    - Intercepts
+    - Slopes
+    - Smooths
+    
+
+## Our Data
+
+- We take data from @soskuthyHorizontalDiphthongShift2019
+- Exploratory research on change in two diphthongs of New Zealand English.
+- We'll look at one: [price]{.smallcaps}
+- What does this mean?
+
+---
+
+{{< video PRICE_male_icphs_vid.mp4 width="800" height="600" >}}
+
+<https://github.com/soskuthy/nz_vowels/blob/master/videos/PRICE_male_icphs_vid.mp4>
+
+## Our Data (Sketched)
+
+- We have a large collection of audio recordings of individual instances (tokens)
+of these vowels.
+- We are interested in the first and second formants (peaks in the
+audio caused by position of tongue in mouth &c. &c. &c.)
+- Each is sampled 11 times.
+- There's more in the data frame (including the _third_ formant, duration of token).
+
+---
+
+```{r}
+#| df-print: paged
+price <- read_rds(here('data', 'price_anon.rds'))
+price |> 
+  select(speaker_anon, sex, yob, syllables_per_sec, measurement_no, f1, f2) |> 
+  head(n=12) 
+```
+
+## A Simple GAM
+
+- What can we do with _one measurement per speaker_?
+- Diphthongs go from one place to another.
+    - Look at change in 'onset' or 'offset' from 1957-1987 (year of birth).
+    - Just like the GAMs we looked at last time!
+
+## Filter Data
+
+```{r}
+price_offset_means <- price |>
+  filter(
+    measurement_no == 9,
+    between(f1, f1_lower, f1_upper),
+    between(f2, f2_lower, f2_upper),
+    following_voiceless == FALSE 
+  ) |> 
+  group_by(speaker_anon) |> 
+  summarise(
+    f1 = mean(f1, na.rm=TRUE),
+    f2 = mean(f2, na.rm=TRUE),
+    yob = first(yob),
+    sex = first(sex),
+    syllables_per_sec = mean(
+      syllables_per_sec, 
+      na.rm=TRUE
+    )
+  )
+```
+
+## Fit GAM
+
+```{r}
+#| error: true
+library(mgcv)
+f1_fit <- bam(
+  formula = f1 ~ sex + s(yob, by = sex, k = 10, bs = "tp") + 
+    s(syllables_per_sec, k = 10, bs = "tp"),
+  data = price_offset_means
+)
+```
+::: {.fragment .big}
+😤
+:::
+
+- `mgcv` wants [factor]{.red} columns.
+
+## Factor conversion
+
+```{r}
+price_offset_means <- price_offset_means |> 
+  mutate(
+    sex = factor(sex)
+  )
+```
+
+## Try again!
+
+```{r}
+f1_fit <- gam(
+  formula = f1 ~ sex + 
+    s(yob, by = sex, k = 10, bs = "cr") + 
+    s(syllables_per_sec, k = 10, bs = "cr"),
+  data = price_offset_means
+)
+```
+
+## Summary
+
+```{r}
+summary(f1_fit)
+```
+
+## Is `k` high enough?
+
+```{r}
+#| fig.keep: none
+gam.check(f1_fit)
+```
+
+---
+
+```{r}
+library(gratia)
+appraise(f1_fit)
+```
+
+---
+
+```{r}
+draw(f1_fit)
+```
+
+---
+
+<!-- It looks like I'm plotting twice. This 
+lets me output the text ouput first then make
+a new slide with the plot (hiding the code chunk)-->
+
+```{r}
+#| fig-keep: none
+library(itsadug)
+plot_smooth(
+  f1_fit,
+  view = "yob",
+  plot_all = "sex"
+)
+```
+
+---
+
+```{r}
+#| echo: false
+library(itsadug)
+plot_smooth(
+  f1_fit,
+  view = "yob",
+  plot_all = "sex",
+  print.summary = FALSE
+)
+```
+
+# Interactions
+
+## Interactions
+
+- You've already seen [continuous by factor]{.red} interactions (i.e. `by`).
+- What about [continuous by continuous]{.red}?
+    - `ti()` - interaction separated from main effects.
+    - `te()` - interaction and main effects together.
+
+## GAM with `ti`
+
+```{r}
+f1_ti_fit <- bam(
+  formula = f1 ~ sex + s(yob, by = sex, k = 10, bs = "tp") + 
+    s(syllables_per_sec, k = 4, bs = "tp") + 
+    ti(yob, syllables_per_sec, k = c(10, 4), bs = "tp"),
+  data = price_offset_means
+)
+```
+
+---
+
+```{r}
+summary(f1_ti_fit)
+```
+
+---
+
+```{r}
+draw(f1_ti_fit)
+```
+
+---
+
+```{r}
+#| output-location: slide
+pvisgam(
+  f1_ti_fit, 
+  view=c("yob", "syllables_per_sec"),
+  select = 4
+)
+```
+
+
+## GAM with `te`
+
+```{r}
+f1_te_fit <- gam(
+  formula = f1 ~ sex + 
+    te(yob, syllables_per_sec, by = sex, k = c(10, 4), bs = "tp"),
+  data = price_offset_means
+)
+```
+
+---
+
+```{r}
+summary(f1_te_fit)
+```
+
+---
+
+```{r}
+draw(f1_te_fit)
+```
+
+# Random Effects
+
+## Random Effects (Revision)
+
+- We have lots of readings from each speaker.
+- These are not [independent]{.red}.
+- Without random effects, our models assume independence.
+- This can lead to overconfidence.
+
+## Random Intercepts
+
+- Capture differences in overall mean value of a speaker.
+- Assume speakers come from normal distribution.
+- We can check this assumption.
+
+## Filtering Again
+
+```{r}
+price_filtered <- price |> 
+  filter(
+    measurement_no == 9,
+    between(f1, f1_lower, f1_upper),
+    between(f2, f2_lower, f2_upper),
+    following_voiceless == FALSE, # filtering step used in paper.
+    syllables_per_sec < 10
+  ) |> 
+  mutate(
+    sex = factor(sex)
+  )
+```
+
+
+## GAMM with Random Intercepts
+
+```{r}
+#| error: true
+f1_int_fit <-  bam(
+  formula = f1 ~ sex + s(yob, by = sex, k = 10, bs = "tp") + 
+    s(syllables_per_sec, k = 4, bs = "tp") + 
+    ti(yob, syllables_per_sec, k = c(10, 4), bs = "tp") +
+    s(speaker_anon, bs = "re"),
+  data = price_filtered
+)
+```
+
+::: {.fragment .big}
+🤦
+:::
+
+- Same problem, different error message!
+
+---
+
+```{r}
+price_filtered <- price_filtered |> 
+  mutate(
+    speaker_anon = factor(speaker_anon)
+  )
+```
+
+## GAMM with Random Intercepts (2)
+
+```{r}
+#| cache: true
+f1_int_fit <-  gam(
+  formula = f1 ~ sex + s(yob, by = sex, k = 10, bs = "tp") + 
+    s(syllables_per_sec, k = 4, bs = "tp") + 
+    ti(yob, syllables_per_sec, k = c(10, 4), bs = "tp") +
+    s(speaker_anon, bs = "re"),
+  data = price_filtered
+)
+```
+
+- Things are starting to slow down!
+
+---
+
+```{r}
+summary(f1_int_fit)
+```
+
+---
+
+```{r}
+appraise(f1_int_fit)
+```
+
+---
+
+```{r}
+draw(f1_int_fit)
+```
+
+## Random Slopes
+
+- Usually factor x factor
+- We'll make another factor:
+
+::: fragment
+```{r}
+price_filtered <- price_filtered |> 
+  mutate(
+    following_liquid = following %in% c("r", "l"),
+    following_liquid = factor(following_liquid)
+  )
+```
+:::
+
+## GAMM with Random Slopes
+
+```{r}
+#| code-line-numbers: "|6|1|3-5|8-9"
+#| cache: true
+f1_int_slope_fit <-  bam(
+  formula = f1 ~ sex + following_liquid + 
+    s(yob, by = sex, k = 10, bs = "cr") + 
+    s(syllables_per_sec, k = 4, bs = "cr") + 
+    ti(yob, syllables_per_sec, k = c(10, 4), bs = "cr") +
+    s(speaker_anon, following_liquid, bs = "re"),
+  data = price_filtered,
+  discrete = TRUE,
+  nthreads = detectCores() - 1
+)
+```
+
+---
+
+```{r}
+summary(f1_int_slope_fit)
+```
+
+## Random Smooths
+
+- We have multiple _trajectories_ for each speaker.
+- We can capture this feature of the full data set
+with a factor smooth interaction.
+- Size and computational resources are growing rapidly:
+  - `f1_ti_fit` < 1 MB
+  - `f1_int_fit` = 22.7 MB
+  - `f1_int_slope_fit` = 87.6 MB
+  - `f1_fs_fit` = 231.9 MB
+- **NB**: different data sets.
+  
+## Filtering (again)
+
+```{r}
+price_filtered <- price |> 
+  filter(
+    between(f1, f1_lower, f1_upper),
+    between(f2, f2_lower, f2_upper),
+    syllables_per_sec < 10,
+    following_voiceless == FALSE # filtering step used in paper.
+  ) |> 
+  mutate(
+    sex = factor(sex),
+    speaker_anon = factor(speaker_anon),
+  ) |> 
+  # create identifier for each trajectory.
+  group_by(speaker_anon) |> 
+  mutate(
+    traj_no = cumsum(measurement_no <= lag(measurement_no, default = 11)),
+    traj_id = paste0(speaker_anon, '_', traj_no),
+    traj_id = factor(traj_id)
+  ) |> 
+  ungroup()
+
+# make a subset of the data so that it can be fit on a laptop. Just keep 
+# the first three trajectories and 30% of the speakers. We want some early
+# and some later speakers.
+early_speakers <- price |> 
+  filter(yob < 1900) |> 
+  pull(speaker_anon) |>
+  unique()
+
+mid_speakers <- price |> 
+  filter(between(yob, 1900, 1950)) |> 
+  pull(speaker_anon) |>
+  unique()
+
+late_speakers <- price |> 
+  filter(yob > 1950) |> 
+  pull(speaker_anon) |>
+  unique()
+
+speakers_to_keep <- c(
+  sample(early_speakers, size = 50),
+  sample(mid_speakers, size = 50),
+  sample(late_speakers, size = 50)
+)
+
+price_filtered <- price_filtered |> 
+  filter(
+    speaker_anon %in% speakers_to_keep,
+    traj_no <= 3
+  )
+```
+
+## GAMM with Random Smooths
+
+```{r}
+#| cache: true
+#| code-line-numbers: "|8|10-11"
+f1_fs_fit <- bam(
+  formula = f1 ~ sex + 
+    s(measurement_no, by = sex, k = 4, bs = "cr") +
+    s(yob, by = sex, k = 4, bs = "cr") + 
+    ti(measurement_no, yob, by = sex, k = c(4, 4), bs = "cr") +
+    s(syllables_per_sec, k = 4, bs = "cr") + 
+    s(speaker_anon, bs = "re") +
+    s(measurement_no, traj_id, bs = "fs", k = 4, m = 1),
+  data = price_filtered,
+  discrete = TRUE,
+  nthreads = detectCores() - 1
+)
+```
+
+---
+
+```{r}
+# Note re.test = FALSE! This speeds things up
+# a lot!
+summary(f1_fs_fit, re.test = FALSE)
+```
+
+---
+
+```{r}
+appraise(f1_fs_fit)
+```
+
+---
+
+```{r}
+draw(f1_fs_fit)
+```
+
+---
+
+```{r}
+#| cache: true
+#| output-location: slide
+inspect_random(
+  f1_fs_fit,
+  select = 9,
+  cond = list(
+    "traj_id" = sample(unique(price_filtered$traj_id), size = 20)
+  ),
+  print.summary = FALSE
+)
+```
+
+
+---
+
+```{r}
+# Here, the plots are getting a bit complicated.
+big_mod_preds <- get_predictions(
+  f1_fs_fit,
+  cond = list(
+    yob = c(1860, 1880, 1900, 1920, 1950, 1970),
+    measurement_no = 1:11,
+    sex = c("M", "F")
+  )
+)
+```
+
+---
+
+```{r}
+#| output-location: slide
+big_mod_preds |> 
+  ggplot(
+    aes(
+      x = measurement_no, 
+      ymin = fit - CI,
+      ymax = fit + CI,
+      y = fit,
+      fill = sex
+    )
+  ) +
+  geom_line(aes(colour = sex)) +
+  geom_ribbon(alpha = 0.2) +
+  facet_wrap(vars(yob))
+```
+
+## Random Slopes
+
+- For UC researchers (including research students), "Big R" (and François Bissey) is your friend.
+    - 384GB of RAM
+    - 32 cpus
+    - 2TB of disk --- expandable to some extent to accommodate your projects 
+- <https://wiki.canterbury.ac.nz/display/RCC/RStudio+instances+on+the+RCC>
+- You don't need to lock up your computer over night!
+
+## Next Time
+
+- GAMMs are often used to investigate time series data.
+- Time series data often suffers from [autocorrelation]{.red}:
+    - i.e. the value at time $t$ is correlated with the value at time $t+1$.
+- Random smooths can sometimes handle this (but are expensive)
+- We'll look at testing for autocorrelation and other methods for handling it.
+- We'll also look at [model comparison]{.red}
+
+## What to do now?
+
+::: fragment
+
+```{r}
+#install.packages('usethis')
+usethis::use_course('nzilbb/gamm_sessions')
+```
+
+:::
+
+- A new R project should open in R Studio.
+- Go to the `session_2.R` script in the `scripts folder`.
+- Work through the examples.
+
+# References
+
+```{r}
+#| echo: false
+grateful::nocite_references(
+  grateful::cite_packages(output = "citekeys", out.dir = here())
+)
+```
+
+
+::: refs
+
+:::
