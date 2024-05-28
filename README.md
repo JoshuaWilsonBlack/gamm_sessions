@@ -10,6 +10,6 @@ These sessions are accompanied the material at <https://nzilbb.github.io/statist
 ## Workshop workflow
 
 1. If you don't have the `usethis` package, install it using `install.packages('usethis')`
-2. Run `usethis::use_course('nzilbb/gamm_workshops')
+2. Run `usethis::use_course('nzilbb/gamm_workshops')`
 
 R should open a new window with an R project. The code for the sessions is in the `scripts` folder.
