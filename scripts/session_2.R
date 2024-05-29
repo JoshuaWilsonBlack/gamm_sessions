@@ -136,7 +136,7 @@ price_mean_f1_preds <- get_predictions(
 f1_ti_fit <- gam(
   formula = f1 ~ sex + s(yob, by = sex, k = 10, bs = "tp") + 
     s(syllables_per_sec, k = 4, bs = "tp") + 
-    ti(yob, syllables_per_sec, k = c(10, 4), bs = "tp"),
+    ti(yob, syllables_per_sec, by = sex, k = c(10, 4), bs = "tp"),
   data = price_offset_means
 )
 
@@ -302,7 +302,7 @@ price_filtered <- price |>
     speaker_anon = factor(speaker_anon),
   ) |> 
   # create identifier for each trajectory.
-  group_by(speaker_anon) |> 
+  group_by(speaker_anon) |>
   mutate(
     traj_no = cumsum(measurement_no <= lag(measurement_no, default = 11)),
     traj_id = paste0(speaker_anon, '_', traj_no),
