@@ -177,7 +177,7 @@ draw(f1_fit)
 ---
 
 <!-- It looks like I'm plotting twice. This 
-lets me output the text ouput first then make
+lets me output the text output first then make
 a new slide with the plot (hiding the code chunk)-->
 
 ```{r}
@@ -574,9 +574,10 @@ big_mod_preds |>
 
 ## What to do now?
 
-::: fragment
+::: {.fragment}
 
 ```{r}
+#| eval: false
 #install.packages('usethis')
 usethis::use_course('nzilbb/gamm_sessions')
 ```

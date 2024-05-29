@@ -141,19 +141,19 @@ f1_ti_fit <- gam(
 )
 
 # Look at the summary again.
-summary(f1_interaction_fit)
-# All terms are significant in the summary. 
+summary(f1_ti_fit)
+# All terms are significant in the summary except the interaction for male
+# speakers.
 
 # But what is the effect of each smooth term in the model.
-draw(f1_interaction_fit)
+draw(f1_ti_fit)
 
 # We can make a similar plot with `itsadug::pvisgam()`
-# Partial effects plot
+# Partial effects plot for female speakers.
 pvisgam(
   f1_ti_fit, 
   view=c("yob", "syllables_per_sec"),
-  select = 4,
-  rm.ranef=TRUE
+  select = 4
 )
 # Try to figure out what happens if you change the number after 'select'.
 # For more on these visualisation functions see https://cran.r-project.org/web/packages/itsadug/vignettes/inspect.html
@@ -166,12 +166,13 @@ f1_te_fit <- gam(
   data = price_offset_means
 )
 
-summary(f1_interaction_fit_2)
+summary(f1_te_fit)
+# What is different about this fit?
 
-draw(f1_interaction_fit_2)
+draw(f1_te_fit)
 
 # This model does not let you distinguish between main effect and interaction
-# terms. Which is most sensible depends on your hypothesis.
+# terms. The version which is most sensible will depend on your hypothesis.
 
 # Random effects. The first kind: random intercepts. Here we include _each measurement_
 # from each speaker, rather than just their means. 
@@ -191,11 +192,13 @@ price_filtered <- price |>
 # Quick look at the summary to make sure there's nothing too crazy going on.
 summary(price_filtered)
 
-# We'll switch to `bam` now.
-f1_int_fit <-  bam(
-  formula = f1 ~ sex + s(yob, by = sex, k = 10, bs = "tp") + 
-    s(syllables_per_sec, k = 4, bs = "tp") + 
-    ti(yob, syllables_per_sec, k = c(10, 4), bs = "tp") +
+# We'll switch to `bam` now. We also change to cubic regression splines. Thin
+# plate splines can be slightly inefficient with bam (see warnings section of
+# `?bam`).
+f1_int_fit <- bam(
+  formula = f1 ~ sex + s(yob, by = sex, k = 10, bs = "cr") + 
+    s(syllables_per_sec, k = 4, bs = "cr") + 
+    ti(yob, syllables_per_sec, by = sex, k = c(10, 4), bs = "cr") +
     s(speaker_anon, bs = "re"),
   data = price_filtered
 )
@@ -207,10 +210,10 @@ f1_int_fit <-  bam(
 # Let's fix it this time the base R way.
 price_filtered$speaker_anon <- factor(price_filtered$speaker_anon)
 
-f1_int_fit <-  bam(
-  formula = f1 ~ sex + s(yob, by = sex, k = 10, bs = "tp") + 
-    s(syllables_per_sec, k = 4, bs = "tp") + 
-    ti(yob, syllables_per_sec, k = c(10, 4), bs = "tp") +
+f1_int_fit <- bam(
+  formula = f1 ~ sex + s(yob, by = sex, k = 10, bs = "cr") + 
+    s(syllables_per_sec, k = 4, bs = "cr") + 
+    ti(yob, syllables_per_sec, by = sex, k = c(10, 4), bs = "cr") +
     s(speaker_anon, bs = "re"),
   data = price_filtered,
   discrete = TRUE,
@@ -241,9 +244,9 @@ price_filtered <- price_filtered |>
 
 # Fit again
 f1_int_fit <-  bam(
-  formula = f1 ~ sex + s(yob, by = sex, k = 10, bs = "tp") + 
-    s(syllables_per_sec, k = 4, bs = "tp") + 
-    ti(yob, syllables_per_sec, k = c(10, 4), bs = "tp") +
+  formula = f1 ~ sex + s(yob, by = sex, k = 10, bs = "cr") + 
+    s(syllables_per_sec, k = 4, bs = "cr") + 
+    ti(yob, syllables_per_sec, by = sex, k = c(10, 4), bs = "cr") +
     s(speaker_anon, bs = "re"),
   data = price_filtered,
   discrete = TRUE,
@@ -279,7 +282,7 @@ f1_int_slope_fit <-  bam(
   formula = f1 ~ sex + following_liquid + 
     s(yob, by = sex, k = 10, bs = "tp") + 
     s(syllables_per_sec, k = 4, bs = "tp") + 
-    ti(yob, syllables_per_sec, k = c(10, 4), bs = "tp") +
+    ti(yob, syllables_per_sec, by = sex, k = c(10, 4), bs = "tp") +
     s(speaker_anon, following_liquid, bs = "re"),
   data = price_filtered,
   discrete = TRUE,
@@ -345,6 +348,7 @@ price_filtered |>
   select(sex, yob, f1) |> 
   summary()
 
+# We now fit the model with random smooths
 f1_fs_fit <- bam(
   formula = f1 ~ sex + 
     s(measurement_no, by = sex, k = 4, bs = "tp") +
@@ -358,15 +362,18 @@ f1_fs_fit <- bam(
   nthreads = detectCores() - 1
 )
 
+# If you run this, it will take a long time.
 summary(f1_fs_fit)
 
+# This, with re.test = FALSE, is much faster.
 summary(f1_fs_fit, re.test = FALSE)
 
 appraise(f1_fs_fit)
 
 draw(f1_fs_fit)
 
-# Here, the plots are getting a bit complicated.
+# Here, the plots are getting a bit complicated. We can do something a bit
+# nicer with the `get_predictions` function.
 big_mod_preds <- get_predictions(
   f1_fs_fit,
   cond = list(
@@ -391,3 +398,12 @@ big_mod_preds |>
   facet_wrap(vars(yob))
 
 # Exercise: fit this for f2 then find some way to plot them together.
+
+# Exercise: in these data the speech rate seems to increase over time. Can you
+# figure out a way to modify the plot above so that each facet is at the 
+# average speech rate _for that year_.
+
+# Exercise: how might we modify the model to capture the fact that speech rate
+# seems to increase with time? Perhaps another `ti` term would work? You may
+# need more data points for this to work. To get more data points, go up to the
+# part of the code with `traj_no <= 3` above and increase the value.
