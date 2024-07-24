@@ -1,0 +1,515 @@
+---
+title: "GAMMs Session 3"
+subtitle: "Model Comparison and Autoregression"
+author: "Joshua <span style='font-variant: small-caps;'>Wilson Black</span>"
+institute: "Te Kāhui Roro Reo | New Zealand Institute of Language, Brain and Behaviour <br/> Te Whare Wānanga o Waitaha | University of Canterbury"
+format:
+  revealjs:
+    theme: [custom.scss]
+    incremental: true
+    logo: images/NZILBB-small.svg
+    df-print: paged
+    title-slide-attributes:
+      data-background-image: ../images/NZILBB-big.svg
+      data-background-position: 'top left'
+      data-background-size: 50%
+bibliography: 
+  - grateful-refs.bib
+  - ../../stat_workshops.bib
+editor: 
+  markdown: 
+    wrap: 72
+execute: 
+  echo: true
+---
+
+```{r}
+#| echo: false
+library(tidyverse)
+library(here)
+library(parallel)
+library(mgcv)
+library(itsadug)
+
+theme_set(theme_bw())
+
+# Load last weeks data behind the scenes
+price <- read_rds(here('data', 'price_anon.rds'))
+
+price_filtered <- price |> 
+  filter(
+    between(f1, f1_lower, f1_upper),
+    between(f2, f2_lower, f2_upper),
+    syllables_per_sec < 10,
+    following_voiceless == FALSE # filtering step used in paper.
+  ) |> 
+  mutate(
+    sex = factor(sex),
+    speaker_anon = factor(speaker_anon),
+  ) |> 
+  # create identifier for each trajectory.
+  group_by(speaker_anon) |> 
+  mutate(
+    traj_no = cumsum(measurement_no <= lag(measurement_no, default = 11)),
+    traj_id = paste0(speaker_anon, '_', traj_no),
+    traj_id = factor(traj_id)
+  ) |> 
+  ungroup()
+
+# make a subset of the data so that it can be fit on a laptop. Just keep 
+# the first three trajectories and 30% of the speakers. We want some early
+# and some later speakers.
+early_speakers <- price |> 
+  filter(yob < 1900) |> 
+  pull(speaker_anon) |>
+  unique()
+
+mid_speakers <- price |> 
+  filter(between(yob, 1900, 1950)) |> 
+  pull(speaker_anon) |>
+  unique()
+
+late_speakers <- price |> 
+  filter(yob > 1950) |> 
+  pull(speaker_anon) |>
+  unique()
+
+speakers_to_keep <- c(
+  sample(early_speakers, size = 50),
+  sample(mid_speakers, size = 50),
+  sample(late_speakers, size = 50)
+)
+
+price_filtered <- price_filtered |> 
+  filter(
+    speaker_anon %in% speakers_to_keep,
+    traj_no <= 3
+  )
+```
+
+
+## Overview
+
+1. Recap
+2. Autocorrelation
+3. Model comparison
+   
+# Recap
+
+## What are GAMMs?
+
+- A flexible, but still interpretable, way of capturing non-linear patterns
+in data.
+- [G]{.red}eneralised: use variety of response families (just like GLMMs).
+- [A]{.red}dditive: sum together smooth functions of our explanatory variables.
+- [M]{.red}ixed: include random effects (incl. random smooths)
+- [M]{.red}odel: ...they're statistical models.
+
+## `mgcv` Syntax
+
+::: {.fragment}
+
+```{r}
+#| cache: true
+#| code-line-numbers: "|1|2|3-4,6|5|7|8|10-11"
+f1_fs_fit <- bam(
+  formula = f1 ~ sex + 
+    s(measurement_no, by = sex, k = 4, bs = "cr") +
+    s(yob, by = sex, k = 4, bs = "cr") + 
+    ti(measurement_no, yob, by = sex, k = c(4, 4), bs = "cr") +
+    s(syllables_per_sec, k = 4, bs = "cr") + 
+    s(speaker_anon, bs = "re") +
+    s(measurement_no, traj_id, bs = "fs", k = 4, m = 1),
+  data = price_filtered,
+  discrete = TRUE,
+  nthreads = detectCores() - 1
+)
+```
+
+:::
+
+::: notes
+
+This is the most complex model from our previous session. We're looking at 
+F1 trajectories for [price]{.smallcaps}.
+
+1. `mgcv` functions: `gam`, `gamm`, `bam`. Latter for large data sets. First,
+for gams witout random effects structures.
+2. Explaining `f1` via, a parametric term sex with `M` and `F`.
+3. A series of smooth terms of one continuous variable. Measurement number,
+i.e., time within a single diphthong token. We've specified k, in this
+case with some knowledge from previous models that we've got enough wiggliness
+and with a view to decreasing the computational load.
+4. A continuous interaction term which captures the interaction between
+measurement number and year of birth.
+5. For both (3) and (4), we are fitting for both male and female speakers.
+6. A by-speaker random intercept.
+7. Random smooths for each trajectory. Note `m=1`.
+8. Use of `discrete=TRUE` and multiple cores (provided with `bam`) to speed
+up model fit.
+
+:::
+
+## The Story So Far
+
+- What GAMMs are.
+- How to fit a GAM with `mgcv`.
+  - Some common error messages
+  - Difference smooths vs. by-factor smooths
+- How to fit a GA[M]{.red}M with `mgcv`
+  - Random intercepts,
+  - Random slopes, 
+  - Random smooths
+  
+# Autocorrelation
+
+## Independent Information {.smaller}
+
+- A measurement at time $t$ is often closely correlated with the measurement
+at time $t-1$.
+    - If I have a thermometer in my office, the measurement at 1:00pm and the
+    measure at 1:01pm are going to be very similar.
+    - Four measures
+    spread across different times and days carry more information than 
+    measures taken on the same day at: 1:00pm, 1:01pm, 1:02pm, 1:03pm.
+- This kind of dependence is called [autocorrelation]{.red}.
+- You [must]{.red} think about this when using GA(M)Ms.
+
+## Testing for Autocorrelation
+
+- We use the function `acf()` from `itsadug`.
+- Let's create a bad model.
+
+## Ignoring Autocorrelation
+
+```{r}
+bad_fit <- bam(
+  formula = f1 ~ sex + 
+    s(measurement_no, by = sex, k = 4, bs = "cr") +
+    s(yob, by = sex, k = 4, bs = "cr") + 
+    ti(measurement_no, yob, by = sex, k = c(4, 4), bs = "cr") +
+    s(syllables_per_sec, k = 4, bs = "cr") + 
+    s(speaker_anon, bs = "re"),
+  data = price_filtered,
+  discrete = TRUE,
+  nthreads = detectCores() - 1
+)
+```
+
+## Apply `acf()`
+
+::: fragment
+```{r}
+#| output-location: fragment
+acf_resid(bad_fit)
+```
+:::
+
+- At lag=1, autocorrelation gets up to around 0.5.
+
+
+## What to Do?
+
+- Random Smooths
+    - Computational overkill (or even failure!)
+    - Especially when using `method="ML"` (see model comparisons below).
+- AR(1) autocorrelation model
+    - Adds a dependence on the previous observation
+    - Less computationally intensive.
+    
+## Random Smooths?
+
+::: fragment
+```{r}
+#| output-location: fragment
+acf_resid(f1_fs_fit, split_pred="traj_id")
+```
+:::
+
+- Some autocorrelation left at lags 1 through 4. Largest is around -0.2, not 
+a big deal!
+- Often not an issue as $R^2$ is so high: `r round(summary(f1_fs_fit, re.test = FALSE)$r.sq * 100)`%
+
+## Trying an AR1 model
+
+- We have to work out $\rho$.
+- **Preprocessing:** mark the start of each trajectory.
+    - We need a new column with `TRUE` at the first entry
+    of each trajectory.
+    - **NB:** subsequent rows must be subsequent observations.
+    
+---
+
+```{r}
+price_filtered <- price_filtered |> 
+  mutate(
+    traj_start = traj_id != lag(
+      traj_id, 
+      # 'default' must be something other than the first traj_id.
+      default=price_filtered$traj_id[12]
+    )
+  )
+```
+
+---
+
+```{r}
+#| eval: false
+# An alternative: use the start_event function in `itsadug`
+price_filtered <- start_event(
+  as.data.frame(price_filtered), # This doesn't work with tibbles.
+  column = "measurement_no", # the column containing relative time information..
+  event="traj_id"
+)
+```
+
+## Work out $\rho$
+
+::: fragment
+```{r}
+#| output-location: fragment
+r1 <- start_value_rho(bad_fit, plot=TRUE) # plot=FALSE suppressed the plot.
+```
+:::
+
+## Apply AR1
+
+```{r}
+ar1_fit <- bam(
+  formula = f1 ~ sex + 
+    s(measurement_no, by = sex, k = 4, bs = "cr") +
+    s(yob, by = sex, k = 4, bs = "cr") + 
+    ti(measurement_no, yob, by = sex, k = c(4, 4), bs = "cr") +
+    s(syllables_per_sec, k = 4, bs = "cr") + 
+    s(speaker_anon, bs = "re"),
+  data = price_filtered,
+  rho = r1,
+  AR.start = price_filtered$traj_start,
+  discrete = TRUE,
+  nthreads = detectCores() - 1
+)
+```
+
+## Did it Work?
+
+::: fragment
+```{r}
+#| output-location: fragment
+acf_resid(ar1_fit, split_pred="AR.start")
+```
+:::
+
+- Certainly at lag 1, with some minor residual issues at lag 2 and 3.
+
+# Model Comparison
+
+## Motivating Questions
+
+- Is it worth including that interaction?
+- What is the overall influence of $x$ on the model?
+    - Esp. where $x$ appears in multiple places?
+    - What if my hypothesis doesn't correspond to a particular coefficient
+    in the summary?
+- How can I choose between multiple, theoretically defensible, models?
+
+## What is Model Comparison? {.smaller}
+
+- We use various measures of model fit to compare models.
+- A bad choice: $R^2$ --- it always increases with more predictors.
+- Better: a measure which penalises complexity.
+    - Is the addition of _complexity_ worth it for the increase in _prediction_.
+- Often, we test nested models.
+    - i.e. a bigger model includes all of the predictors in the
+    smaller model.
+- What about backwards and forward selection?
+    - Not my preference and GAMMs make the computational costs even worse.
+    - Include the stuff you think might be relevant!
+
+## Using `compareML()`
+
+- `itsadug` has a useful function called `compareML()` which runs a
+$\chi^2$ test tailored for GAMMs.
+- `AIC()` is another option but can't be used with AR1 autocorrelation models (more later!)
+- Simply put the two models in as arguments.
+- **Spiky bit:** You have to use `method="ML"` in `bam()` if your fixed 
+effects differ.
+    - This _massively_ increases the time required to fit the model.
+
+## `compareML()` Example
+
+- Let's work out if including `sex` is important for our model.
+- `sex` appears in **four** places. Let's remove them all and fit a 
+new model.
+
+## Full Model {auto-animate=true}
+
+```{r}
+#| cache: true
+#| code-line-numbers: "|2-5"
+ar1_ml_fit <- bam(
+  formula = f1 ~ sex + 
+    s(measurement_no, by = sex, k = 4, bs = "cr") +
+    s(yob, by = sex, k = 4, bs = "cr") + 
+    ti(measurement_no, yob, by = sex, k = c(4, 4), bs = "cr") +
+    s(syllables_per_sec, k = 4, bs = "cr") + 
+    s(speaker_anon, bs = "re"),
+  data = price_filtered,
+  rho = r1,
+  AR.start = price_filtered$traj_start,
+  method = "ML"
+)
+```
+
+
+## Nested Model {auto-animate=true}
+
+```{r}
+#| cache: true
+#| code-line-numbers: "2-5"
+ar1_nosex_fit <- bam(
+  formula = f1 ~ 
+    s(measurement_no, k = 4, bs = "cr") +
+    s(yob, k = 4, bs = "cr") + 
+    ti(measurement_no, yob, k = c(4, 4), bs = "cr") +
+    s(syllables_per_sec, k = 4, bs = "cr") + 
+    s(speaker_anon, bs = "re"),
+  data = price_filtered,
+  rho = r1,
+  AR.start = price_filtered$traj_start,
+  method = "ML"
+)
+```
+
+
+## Apply `compareML()`
+
+```{r}
+compareML(ar1_nosex_fit, ar1_ml_fit)
+```
+
+
+## Apply `compareML()` (cont.)
+
+- The inclusion of `sex` is statistically significant.
+- We can report the results of this test in a paper.
+- Note: the order of the two models in `compareML()` doesn't matter.
+    - i.e. `compareML(fit_1, fit_2)` is the same as `compareML(fit_2, fit_1)`.
+- **Exercice:** Determine $\rho$ for the no-sex model.
+
+## Significance Testing {.smaller}
+
+::: fragment
+We've now seen two methods for significance testing:
+:::
+
+1. Reading off model summaries.
+    - Work with `fREML` (and thus `bam` parallel computation)
+    - But is your hypothesis captured in any particular coefficient?
+2. ANOVA via `compareML()`
+    - More flexible.
+    - Can take a long time!
+
+::: fragment
+We should also consider:
+:::
+
+3. Visual methods
+
+---
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+price_offset_means <- price |>
+  filter(
+    measurement_no == 9,
+    between(f1, f1_lower, f1_upper),
+    between(f2, f2_lower, f2_upper),
+    following_voiceless == FALSE 
+  ) |> 
+  group_by(speaker_anon) |> 
+  summarise(
+    f1 = mean(f1, na.rm=TRUE),
+    f2 = mean(f2, na.rm=TRUE),
+    yob = first(yob),
+    sex = first(sex),
+    syllables_per_sec = mean(
+      syllables_per_sec, 
+      na.rm=TRUE
+    )
+  ) |> 
+  mutate(
+    sex = ordered(sex)
+  )
+
+contrasts(price_offset_means$sex) <- "contr.treatment"
+
+f1_fit <- gam(
+  formula = f1 ~ sex + 
+    s(yob, k=10, bs = "cr") + 
+    s(yob, by = sex, k = 10, bs = "cr") + 
+    s(syllables_per_sec, k = 10, bs = "cr"),
+  data = price_offset_means
+)
+
+plot_diff(
+  f1_fit, 
+  view = "yob", 
+  comp=list(sex=c("M","F")), 
+  rm.ranef=T,
+  print.summary = FALSE
+)
+```
+
+## Visual significance testing
+
+- Smooths across factors.
+- Bad idea: claim significance if zero falls out the confidence interval of the
+_difference smooth_.
+
+::: fragment
+::: callout-important
+This has an **insane** false positive rate!
+:::
+:::
+
+## Visual significance testing (cont.)
+
+- Márton Sóskuthy's advice:
+    1. Do model comparison with `compareML()` to determine _overall significance_.
+    2. **Then** use a difference smooth to determine *where* the differences are.
+- Alternative: make an hypothesis about exactly where you will see a difference
+before looking.
+  - e.g., we predict the difference smooth will exclude 0 from 20%-60%.
+  
+# What now?
+
+::: {.fragment}
+
+```{r}
+#| eval: false
+#install.packages('usethis')
+usethis::use_course('nzilbb/gamm_sessions')
+```
+
+:::
+
+- A new R project should open in R Studio.
+- Go to the `session_3.R` script in the `scripts folder`.
+- Work through the script.
+
+
+# References
+
+```{r}
+#| echo: false
+grateful::nocite_references(
+  grateful::cite_packages(output = "citekeys", out.dir = here())
+)
+```
+
+
+::: refs
+
+:::
